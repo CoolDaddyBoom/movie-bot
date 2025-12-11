@@ -1,0 +1,48 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: moviebot-postgres
+    environment:
+      POSTGRES_USER: moviebot
+      POSTGRES_PASSWORD: "211973"
+      POSTGRES_DB: moviebot
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U moviebot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - moviebot-network
+
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: moviebot-bot
+    environment:
+      BOT_TOKEN: ${BOT_TOKEN}
+      DATABASE_DSN: ${DATABASE_DSN}
+      DATABASE_MAX_CONNECTIONS: ${DATABASE_MAX_CONNECTIONS}
+      DATABASE_CONN_TIMEOUT: ${DATABASE_CONN_TIMEOUT}
+      DATABASE_PATH: ${DATABASE_PATH}
+      APP_ENVIRONMENT: ${APP_ENVIRONMENT}
+      APP_LOG_LEVEL: ${APP_LOG_LEVEL}
+      TMDB_API_KEY: ${TMDB_API_KEY} 
+      TMDB_LANGUAGE: ${TMDB_LANGUAGE}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - moviebot-network
+
+volumes:
+  postgres-data:
+
+networks:
+  moviebot-network:
+    driver: bridge

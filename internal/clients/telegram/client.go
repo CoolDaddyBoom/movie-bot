@@ -3,6 +3,7 @@ package telegram
 import (
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"path"
@@ -14,13 +15,15 @@ type Client struct {
 	host       string
 	basePath   string
 	httpClient *http.Client
+	logger     *slog.Logger
 }
 
-func NewClient(token string) *Client {
+func NewClient(token string, logger *slog.Logger) *Client {
 	return &Client{
 		host:       "api.telegram.org",
 		basePath:   "bot" + token,
 		httpClient: &http.Client{Timeout: 30 * time.Second},
+		logger:     logger,
 	}
 }
 
@@ -43,12 +46,37 @@ func (c *Client) GetUpdates(offset int, limit int) ([]Update, error) {
 }
 
 func (c *Client) SendMessage(chatID int, text string) error {
+	c.logger.Debug("Sending message", "chat_id", chatID)
 	q := url.Values{}
 	q.Add("chat_id", strconv.Itoa(chatID))
 	q.Add("text", text)
+	q.Add("parse_mode", "HTML")
 
 	_, err := c.doRequest(http.MethodGet, "sendMessage", q)
+	c.logger.Info("Message sent", "chat_id", chatID)
 	return err
+}
+
+func (c *Client) SendPhoto(chatID int, photoURL string, caption string) error {
+	c.logger.Debug("Sending photo", "chat_id", chatID, "photo_url", photoURL)
+
+	q := url.Values{}
+	q.Add("chat_id", strconv.Itoa(chatID))
+	q.Add("photo", photoURL)
+	q.Add("caption", caption)
+	q.Add("parse_mode", "HTML") // підтримка HTML форматування
+
+	_, err := c.doRequest(http.MethodGet, "sendPhoto", q) // можна POST, але GET теж має працювати
+	c.logger.Info("Photo sent", "chat_id", chatID)
+	return err
+}
+
+func (c *Client) SendPhotoOrMessage(chatID int, photoURL string, text string) error {
+	if photoURL != "" {
+		return c.SendPhoto(chatID, photoURL, text)
+	} else {
+		return c.SendMessage(chatID, text)
+	}
 }
 
 func (c *Client) doRequest(httpMethod, apiMethod string, query url.Values) ([]byte, error) {
@@ -58,7 +86,7 @@ func (c *Client) doRequest(httpMethod, apiMethod string, query url.Values) ([]by
 		Path:   path.Join(c.basePath, apiMethod),
 	}
 
-	url := u.String()
+	url := u.String() // .String() конвертує структуру URL в рядок (з говна в те, що треба)
 
 	req, err := http.NewRequest(httpMethod, url, nil)
 	if err != nil {

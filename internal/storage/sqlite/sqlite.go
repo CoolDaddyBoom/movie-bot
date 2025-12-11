@@ -1,13 +1,15 @@
 package sqlite
 
+// !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+// Не використовується в програмі, тепер використовується postgres+GORM
+// !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 import (
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
-
-	"whattowatchbot/storage"
+	"whattowatchbot/internal/storage"
 
 	_ "github.com/mattn/go-sqlite3" // Драйвер SQLite (blank import)
 )
@@ -141,4 +143,9 @@ func (s *Storage) IsExists(ctx context.Context, m *storage.Movie) (bool, error) 
 	}
 
 	return count > 0, nil
+}
+
+func (s *Storage) Close() error {
+	return s.db.Close()
+
 }
