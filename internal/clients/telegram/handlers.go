@@ -2,86 +2,16 @@ package telegram
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
-	"unicode"
-	"whattowatchbot/storage"
+	"whattowatchbot/internal/clients/tmdb"
+	"whattowatchbot/internal/storage"
 )
 
-// normalizeTitle приводить назву до стандартного вигляду для збереження
-func normalizeTitle(title string) string {
-	// 1. Видалити пробіли з країв
-	title = strings.TrimSpace(title)
-
-	// 2. Видалити лапки з початку і кінця
-	title = strings.Trim(title, `"`)
-
-	// 3. Знову видалити пробіли (якщо були після лапок)
-	title = strings.TrimSpace(title)
-
-	// 4. Привести до Title Case (Перша Велика, Решта Малі)
-	return toTitleCase(title)
-}
-
-// toTitleCase перетворює "слово слово" в "Слово Слово"
-func toTitleCase(s string) string {
-	if s == "" {
-		return s
-	}
-
-	words := strings.Fields(s) // Розбити на слова
-	for i, word := range words {
-		if len(word) > 0 {
-			// Перша літера велика, решта малі
-			runes := []rune(strings.ToLower(word))
-			runes[0] = unicode.ToUpper(runes[0])
-			words[i] = string(runes)
-		}
-	}
-
-	return strings.Join(words, " ")
-}
-
-type Processor struct {
-	client  *Client
-	storage storage.Storage
-}
-
-func NewProcessor(client *Client, storage storage.Storage) *Processor {
-	return &Processor{
-		client:  client,
-		storage: storage,
-	}
-}
-
-func (p *Processor) Process(ctx context.Context, upd Update) error {
-	if upd.Message == nil {
-		return nil
-	}
-
-	chatID := upd.Message.Chat.ID
-	text := upd.Message.Text
-	username := upd.Message.From.Username
-
-	switch {
-	case text == "/start":
-		return p.handleStart(ctx, chatID)
-	case text == "/help":
-		return p.handleHelp(ctx, chatID)
-	case text == "/random":
-		return p.handleRandom(ctx, chatID)
-	case text == "/list":
-		return p.handleList(ctx, chatID)
-	case strings.HasPrefix(text, "/remove "): // ← Додати
-		title := strings.TrimPrefix(text, "/remove ")
-		return p.handleRemove(ctx, chatID, title)
-	default:
-		// Додати фільм
-		return p.handleAddMovie(ctx, chatID, username, text)
-	}
-}
-
 func (p *Processor) handleStart(ctx context.Context, chatID int) error {
+	p.logger.Info("User started bot", "chat_id", chatID)
+
 	text := `👋 Hello! I'm your BaoBaoMovie bot. 
 
 	Send me a movie title to add it to your list! 
@@ -109,51 +39,57 @@ To add a movie, just send me its title! 🎬`
 func (p *Processor) handleRandom(ctx context.Context, chatID int) error {
 	sharedChatID := normalizeUserChatID(chatID)
 
+	p.logger.Debug("Getting random movie", "chat_id", chatID)
+
 	movie, err := p.storage.PickRandom(ctx, sharedChatID)
 	if err != nil {
-		return err
+		p.logger.Error("Failed to pick random movie", "chat_id", chatID, "error", err)
+		return p.client.SendMessage(chatID, "❌ Failed to get random movie. Try again later.")
 	}
 
 	if movie == nil {
+		p.logger.Debug("No movies found", "chat_id", chatID)
 		text := `You don't have any saved movies yet!
 		Add some by sending me their titles! 
 		🎬`
 		return p.client.SendMessage(chatID, text)
 	}
 
-	// Просто показуємо фільм БЕЗ видалення
-	text := fmt.Sprintf("🎬 %s\n\nTo remove it from the list after watching, send:\n/remove %s",
-		movie.Title,
-		movie.Title)
+	p.logger.Info("Picked random movie", "chat_id", chatID, "title", movie.Title)
 
-	return p.client.SendMessage(chatID, text)
-	// ← НЕ видаляємо!
+	// Просто показуємо фільм БЕЗ видалення
+	text := p.formatRandomMovie(movie)
+
+	return p.client.SendPhotoOrMessage(chatID, movie.PosterURL, text)
 }
 
 func (p *Processor) handleList(ctx context.Context, chatID int) error {
 	sharedChatID := normalizeUserChatID(chatID)
 
+	p.logger.Debug("Processing list movies", "chat_id", chatID)
+
 	movies, err := p.storage.List(ctx, sharedChatID)
 	if err != nil {
-		return err
+		p.logger.Error("Failed to list movies", "error", err, "chat_id", chatID)
+		return p.client.SendMessage(chatID, "❌ Failed to get your list. Try again later.")
 	}
 
 	if len(movies) == 0 {
+		p.logger.Debug("No movies in list", "chat_id", sharedChatID)
 		text := `You don't have any saved movies yet! 
 		Add some by sending me their titles! 
 		🎬`
 		return p.client.SendMessage(chatID, text)
 	}
 
-	text := fmt.Sprintf("📋 You have %d movies:\n\n", len(movies))
-	for i, movie := range movies {
-		text += fmt.Sprintf("%d. %s\n", i+1, movie.Title)
-	}
+	p.logger.Info("Listed movies", "chat_id", chatID, "count", len(movies))
+
+	text := p.formatMovieList(movies)
 
 	return p.client.SendMessage(chatID, text)
 }
 
-func (p *Processor) handleAddMovie(ctx context.Context, chatID int, username, title string) error {
+func (p *Processor) handleAddMovie(ctx context.Context, chatID int, title string) error {
 	sharedChatID := normalizeUserChatID(chatID)
 
 	if strings.HasPrefix(title, "/") && title == "/remove" {
@@ -165,6 +101,8 @@ func (p *Processor) handleAddMovie(ctx context.Context, chatID int, username, ti
 	// Нормалізувати назву
 	normalizedTitle := normalizeTitle(title)
 
+	p.logger.Debug("Adding movie", "chat_id", chatID, "original_title", title)
+
 	// Перевірити чи не порожня після очищення
 	if normalizedTitle == "" {
 		return p.client.SendMessage(chatID, "❌ Movie title cannot be empty")
@@ -175,30 +113,58 @@ func (p *Processor) handleAddMovie(ctx context.Context, chatID int, username, ti
 		return p.client.SendMessage(chatID, "❌ Movie title is too long (maximum 200 characters)")
 	}
 
-	// Створити movie
-	movie := &storage.Movie{
-		Title:  normalizedTitle,
-		ChatID: sharedChatID,
+	// Search movie in TMDB
+	results, err := p.tmdbClient.SearchMulti(ctx, normalizedTitle)
+	if errors.Is(err, tmdb.ErrMovieNotFound) {
+		p.logger.Info("Movie not found in TMDB", "chat_id", sharedChatID, "title", normalizedTitle)
+		text := fmt.Sprintf(`⚠️ Movie "%s" not found in TMDB database.
+							Would you like to add it manually (without TMDB info)?
+							Reply with: /add_manual %s`, normalizedTitle, normalizedTitle)
+
+		return p.client.SendMessage(chatID, text)
 	}
+
+	// Інша помилка (API недоступний) (точно???)
+	if err != nil {
+		p.logger.Error("TMDB API error", "error", err, "title", normalizedTitle)
+		return p.client.SendMessage(chatID, "❌ Failed to search movie. Try again later.")
+	}
+
+	// Беремо перший результат (поки що)
+	result := results[0]
+
+	p.logger.Info("Movie found in TMDB",
+		"chat_id", sharedChatID,
+		"title", result.Title,
+		"tmdb_id", result.ID)
+
+	movie := p.multiResultToStorageMovie(&result, sharedChatID)
 
 	// Перевірити чи не існує
 	exists, err := p.storage.IsExists(ctx, movie)
 	if err != nil {
-		return err
+		p.logger.Error("Failed to check if movie exists", "error", err, "chat_id", sharedChatID)
+		return p.client.SendMessage(chatID, "❌ Failed to add movie. Try again later.")
 	}
 
 	if exists {
+		p.logger.Debug("Movie already exists", "chat_id", chatID, "title", normalizedTitle)
 		text := fmt.Sprintf("ℹ️ The movie \"%s\" is already in your list!", normalizedTitle)
 		return p.client.SendMessage(chatID, text)
 	}
 
 	// Save
 	if err := p.storage.Save(ctx, movie); err != nil {
-		return err
+		p.logger.Error("Failed to save movie", "error", err, "chat_id", sharedChatID, "title", normalizedTitle)
+		return p.client.SendMessage(chatID, "❌ Failed to add movie. Try again later.")
 	}
 
-	text := fmt.Sprintf("✅ The movie \"%s\" has been added to your list!", normalizedTitle)
-	return p.client.SendMessage(chatID, text)
+	p.logger.Info("Movie added", "chat_id", sharedChatID, "title", normalizedTitle)
+
+	// Форматуємо відповідь
+	text := p.formatMovieAdded(movie)
+
+	return p.client.SendPhotoOrMessage(chatID, movie.PosterURL, text)
 }
 
 func (p *Processor) handleRemove(ctx context.Context, chatID int, title string) error {
@@ -210,6 +176,8 @@ func (p *Processor) handleRemove(ctx context.Context, chatID int, title string) 
 		return p.client.SendMessage(chatID, "❌ Please specify the movie title after the /remove command")
 	}
 
+	p.logger.Debug("Removing movie", "chat_id", chatID, "title", normalizedTitle)
+
 	movie := &storage.Movie{
 		Title:  normalizedTitle,
 		ChatID: sharedChatID,
@@ -218,35 +186,23 @@ func (p *Processor) handleRemove(ctx context.Context, chatID int, title string) 
 	// Check if it exists
 	exists, err := p.storage.IsExists(ctx, movie)
 	if err != nil {
-		return err
+		p.logger.Error("Failed to check if movie exists", "error", err, "chat_id", sharedChatID)
+		return p.client.SendMessage(chatID, "❌ Failed to remove movie. Try again later.")
 	}
 
 	if !exists {
+		p.logger.Debug("Movie not found for removal", "chat_id", chatID, "title", normalizedTitle)
 		return p.client.SendMessage(chatID,
 			fmt.Sprintf("❌ The movie \"%s\" was not found in your list", normalizedTitle))
 	}
 
 	// Remove
 	if err := p.storage.Remove(ctx, movie); err != nil {
-		return err
+		p.logger.Error("Failed to remove movie", "error", err, "chat_id", sharedChatID, "title", normalizedTitle)
+		return p.client.SendMessage(chatID, "❌ Failed to remove movie. Try again later.")
 	}
 
+	p.logger.Info("Movie removed", "chat_id", sharedChatID, "title", normalizedTitle)
 	return p.client.SendMessage(chatID,
 		fmt.Sprintf("✅ The movie \"%s\" has been removed from your list", normalizedTitle))
-}
-
-func normalizeUserChatID(chatID int) int {
-	// Список особливих користувачів (ти і дівчина)
-	specialUsers := map[int]int{
-		613544049:  613544049, // Твій chat_id → твій же (зміни на свій!)
-		7465672598: 613544049, // Її chat_id → твій chat_id (зміни на її!)
-	}
-
-	// Якщо користувач особливий - повертає спільний ID
-	if sharedID, exists := specialUsers[chatID]; exists {
-		return sharedID
-	}
-
-	// Звичайний користувач - повертає свій ID
-	return chatID
 }

@@ -4,8 +4,7 @@ import (
 	"context"
 	"log"
 	"time"
-
-	"whattowatchbot/telegram"
+	"whattowatchbot/internal/clients/telegram"
 )
 
 type Consumer struct {

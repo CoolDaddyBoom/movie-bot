@@ -1,0 +1,30 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Documentation
+README.md
+LICENSE
+
+# Environment files
+.env
+.env.*
+
+# Database files
+*.db
+*.db-shm
+*.db-wal
+
+# IDE
+.idea
+.vscode
+
+# Binaries
+movie-bot
+*.exe
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
